@@ -2,33 +2,26 @@
  * Google Apps Script (GAS) Backend API for Simple Ticketing System
  * Author: Habib Al Farizi (dametechstudio)
  *
- * INSTRUKSI SETUP:
- * 1. Buat Spreadsheet baru di Google Sheets.
- * 2. Pastikan tab bernama "Sheet1".
- * 3. Baris pertama (A1 - E1) isi dengan header berikut:
- *    A1: ID
- *    B1: Timestamp
- *    C1: Pekerjaan
- *    D1: Prioritas
- *    E1: Status
- * 4. Buka menu Extensions > Apps Script.
- * 5. Hapus kode default (myFunction) dan paste seluruh isi file ini.
- * 6. Klik Deploy > New deployment:
- *    - Select type: Web app
- *    - Description: Ticketing API v1
- *    - Execute as: Me (<email Anda>)
- *    - Who has access: Anyone
- * 7. Klik Deploy, berikan otorisasi izin (Authorize Access).
- * 8. Salin "Web app URL" (format: https://script.google.com/macros/s/.../exec)
- *    dan masukkan ke dalam file .env di frontend:
- *    VITE_GAS_API_URL=<URL_TERSEBUT>
+ * STRUKTUR KOLOM GOOGLE SHEETS:
+ * A1: ID
+ * B1: Timestamp (Waktu Dibuat)
+ * C1: Pekerjaan
+ * D1: Prioritas
+ * E1: Status (Open, In Progress, Done)
+ * F1: InProgressAt (Waktu Mulai Dikerjakan)
+ * G1: DoneAt (Waktu Selesai)
+ *
+ * INSTRUKSI DEPLOY ULANG:
+ * 1. Buka Spreadsheet Anda > Extensions > Apps Script.
+ * 2. Timpa seluruh isi editor dengan file ini, lalu simpan (Ctrl+S / Cmd+S).
+ * 3. Deploy > Manage deployments > Edit (pensil) > Version: New version > Deploy.
  */
 
 const SHEET_NAME = "Sheet1";
 
 /**
  * Handle HTTP GET Request
- * Mengambil seluruh data tiket dari Google Sheets
+ * Mengambil seluruh data tiket dari Google Sheets beserta tracking waktu
  */
 function doGet(e) {
   try {
@@ -44,16 +37,18 @@ function doGet(e) {
       return respondJSON([]);
     }
 
-    // Map setiap baris menjadi objek tiket (abaikan baris 0 / header)
+    // Map setiap baris menjadi objek tiket
     const tickets = data.slice(1).map(function(row) {
       return {
         id: String(row[0] || ""),
-        timestamp: row[1] ? new Date(row[1]).toISOString() : new Date().toISOString(),
+        timestamp: row[1] ? new Date(row[1]).toISOString() : "",
         pekerjaan: String(row[2] || ""),
         prioritas: String(row[3] || "Medium"),
-        status: String(row[4] || "Open")
+        status: String(row[4] || "Open"),
+        inProgressAt: row[5] ? new Date(row[5]).toISOString() : "",
+        doneAt: row[6] ? new Date(row[6]).toISOString() : ""
       };
-    }).reverse(); // Membalik urutan agar tiket paling baru muncul di paling atas
+    }).reverse(); // Tiket terbaru di atas
 
     return respondJSON(tickets);
   } catch (error) {
@@ -63,7 +58,7 @@ function doGet(e) {
 
 /**
  * Handle HTTP POST Request
- * Menerima payload JSON untuk menambah tiket baru atau memperbarui status
+ * Menerima payload JSON untuk menambah tiket baru, update status (maju/mundur + tracking waktu), atau hapus tiket
  */
 function doPost(e) {
   try {
@@ -78,14 +73,16 @@ function doPost(e) {
 
     const body = JSON.parse(e.postData.contents);
 
-    // FITUR UPDATE STATUS (Jika request menyertakan action: 'update_status')
+    // FITUR UPDATE STATUS (Bisa maju / mundur dengan reset timestamp akurat)
     if (body.action === "update_status" && body.id) {
       const data = sheet.getDataRange().getValues();
       let foundIndex = -1;
+      let existingRow = null;
 
       for (let i = 1; i < data.length; i++) {
         if (String(data[i][0]) === String(body.id)) {
           foundIndex = i + 1; // Google Sheets row 1-indexed
+          existingRow = data[i];
           break;
         }
       }
@@ -94,19 +91,49 @@ function doPost(e) {
         return respondJSON({ success: false, error: "Tiket dengan ID tersebut tidak ditemukan." }, 404);
       }
 
-      // Kolom 5 adalah Status (E)
-      sheet.getRange(foundIndex, 5).setValue(body.status || "Done");
-      return respondJSON({ success: true, message: "Status tiket berhasil diperbarui", id: body.id, status: body.status });
+      const targetStatus = body.status || "Open";
+      const nowIso = new Date().toISOString();
+      let inProgressAt = existingRow[5] ? new Date(existingRow[5]).toISOString() : "";
+      let doneAt = existingRow[6] ? new Date(existingRow[6]).toISOString() : "";
+
+      // Logika update & reset timestamp:
+      if (targetStatus === "Open") {
+        // Mundur ke Open -> kosongkan waktu In Progress dan Done
+        inProgressAt = "";
+        doneAt = "";
+      } else if (targetStatus === "In Progress") {
+        // Masuk In Progress -> set waktu In Progress saat ini, kosongkan waktu Done
+        inProgressAt = nowIso;
+        doneAt = "";
+      } else if (targetStatus === "Done") {
+        // Selesai (Done) -> set waktu Done saat ini. Jika belum ada in progress, isi nowIso juga
+        if (!inProgressAt) {
+          inProgressAt = nowIso;
+        }
+        doneAt = nowIso;
+      }
+
+      // Kolom 5 = Status (E), Kolom 6 = InProgressAt (F), Kolom 7 = DoneAt (G)
+      sheet.getRange(foundIndex, 5, 1, 3).setValues([[targetStatus, inProgressAt, doneAt]]);
+
+      return respondJSON({
+        success: true,
+        message: "Status tiket berhasil diperbarui",
+        id: body.id,
+        status: targetStatus,
+        inProgressAt: inProgressAt,
+        doneAt: doneAt
+      });
     }
 
-    // FITUR HAPUS TIKET (Jika request menyertakan action: 'delete_ticket')
+    // FITUR HAPUS TIKET
     if (body.action === "delete_ticket" && body.id) {
       const data = sheet.getDataRange().getValues();
       let foundIndex = -1;
 
       for (let i = 1; i < data.length; i++) {
         if (String(data[i][0]) === String(body.id)) {
-          foundIndex = i + 1; // Google Sheets row 1-indexed
+          foundIndex = i + 1;
           break;
         }
       }
@@ -130,12 +157,15 @@ function doPost(e) {
     const prioritas = body.prioritas || "Medium";
     const status = body.status || "Open";
 
+    // Append baris lengkap (7 kolom: ID, Timestamp, Pekerjaan, Prioritas, Status, InProgressAt, DoneAt)
     sheet.appendRow([
       newId,
       timestamp,
       pekerjaan,
       prioritas,
-      status
+      status,
+      "", // inProgressAt kosong di awal
+      ""  // doneAt kosong di awal
     ]);
 
     return respondJSON({
@@ -146,7 +176,9 @@ function doPost(e) {
         timestamp: timestamp,
         pekerjaan: pekerjaan,
         prioritas: prioritas,
-        status: status
+        status: status,
+        inProgressAt: "",
+        doneAt: ""
       }
     });
   } catch (error) {
@@ -155,7 +187,7 @@ function doPost(e) {
 }
 
 /**
- * Helper untuk mengembalikan respons JSON dengan header CORS yang tepat
+ * Helper untuk mengembalikan respons JSON
  */
 function respondJSON(data, statusCode) {
   return ContentService.createTextOutput(JSON.stringify(data))

@@ -2,7 +2,7 @@ import { ref, computed } from 'vue'
 
 const API_URL = import.meta.env.VITE_GAS_API_URL || ''
 
-// Shared State agar sinkron jika berpindah halaman
+// Shared State agar sinkron antar halaman
 const tickets = ref([])
 const isLoading = ref(false)
 const isSubmitting = ref(false)
@@ -100,7 +100,6 @@ export function useTickets() {
     errorMessage.value = ''
 
     try {
-      // POST ke GAS tanpa header Content-Type application/json agar dianggap simple request (CORS safe)
       await fetch(API_URL, {
         method: 'POST',
         body: JSON.stringify({
@@ -125,19 +124,32 @@ export function useTickets() {
     }
   }
 
-  // Update Status Tiket (Open -> In Progress -> Done) (Khusus Teknisi)
-  const cycleStatus = async (ticket) => {
-    if (!isApiConfigured.value || updatingId.value) return
-
-    const statusOrder = ['Open', 'In Progress', 'Done']
-    const currentIndex = statusOrder.findIndex(s => s.toLowerCase() === (ticket.status || 'open').toLowerCase())
-    const nextStatus = statusOrder[(currentIndex + 1) % statusOrder.length]
+  // Set Status Langsung (Bisa Maju / Mundur dengan Update Timestamp Akurat)
+  const setStatus = async (ticket, targetStatus) => {
+    if (!isApiConfigured.value || updatingId.value === ticket.id) return
+    if (ticket.status === targetStatus) return
 
     updatingId.value = ticket.id
+    const prevStatus = ticket.status
+    const prevInProgress = ticket.inProgressAt
+    const prevDone = ticket.doneAt
 
-    // Optimistic UI update
-    const previousStatus = ticket.status
-    ticket.status = nextStatus
+    const nowIso = new Date().toISOString()
+
+    // Optimistic UI update dengan aturan reset timestamp
+    ticket.status = targetStatus
+    if (targetStatus === 'Open') {
+      ticket.inProgressAt = ''
+      ticket.doneAt = ''
+    } else if (targetStatus === 'In Progress') {
+      ticket.inProgressAt = nowIso
+      ticket.doneAt = ''
+    } else if (targetStatus === 'Done') {
+      if (!ticket.inProgressAt) {
+        ticket.inProgressAt = nowIso
+      }
+      ticket.doneAt = nowIso
+    }
 
     try {
       await fetch(API_URL, {
@@ -145,16 +157,31 @@ export function useTickets() {
         body: JSON.stringify({
           action: 'update_status',
           id: ticket.id,
-          status: nextStatus
+          status: targetStatus
         })
       })
-      showToast(`Status tiket #${ticket.id ? ticket.id.slice(0, 6) : ''} diubah menjadi "${nextStatus}"`, 'success')
+      showToast(`Status tiket #${ticket.id ? ticket.id.slice(0, 6) : ''} diubah ke "${targetStatus}"`, 'success')
     } catch (err) {
       console.error("Gagal update status:", err)
-      ticket.status = previousStatus
+      // Rollback jika gagal
+      ticket.status = prevStatus
+      ticket.inProgressAt = prevInProgress
+      ticket.doneAt = prevDone
       showToast("Gagal memperbarui status di Google Sheets.", 'error')
     } finally {
       updatingId.value = null
+    }
+  }
+
+  // Navigasi Status Bertahap: 'next' (maju) atau 'prev' (mundur)
+  const stepStatus = async (ticket, direction) => {
+    const statusOrder = ['Open', 'In Progress', 'Done']
+    const currentIndex = statusOrder.findIndex(s => s.toLowerCase() === (ticket.status || 'open').toLowerCase())
+    
+    if (direction === 'next' && currentIndex < statusOrder.length - 1) {
+      await setStatus(ticket, statusOrder[currentIndex + 1])
+    } else if (direction === 'prev' && currentIndex > 0) {
+      await setStatus(ticket, statusOrder[currentIndex - 1])
     }
   }
 
@@ -166,7 +193,6 @@ export function useTickets() {
 
     deletingId.value = ticket.id
     const prevTickets = [...tickets.value]
-    // Optimistic delete
     tickets.value = tickets.value.filter(t => t.id !== ticket.id)
 
     try {
@@ -187,20 +213,46 @@ export function useTickets() {
     }
   }
 
-  const formatDate = (dateStr) => {
+  // Format Tanggal & Jam Bahasa Indonesia yang Ringkas & Jelas di HP
+  const formatDateTime = (dateStr) => {
     if (!dateStr) return '-'
     try {
       const d = new Date(dateStr)
-      if (isNaN(d.getTime())) return dateStr
+      if (isNaN(d.getTime())) return '-'
+      
       return d.toLocaleString('id-ID', {
         day: 'numeric',
         month: 'short',
-        year: 'numeric',
         hour: '2-digit',
         minute: '2-digit'
-      })
+      }).replace('.', ':')
     } catch {
-      return dateStr
+      return '-'
+    }
+  }
+
+  // Hitung durasi pengerjaan tiket (antara In Progress dan Selesai)
+  const calculateDuration = (startStr, endStr) => {
+    if (!startStr || !endStr) return null
+    try {
+      const start = new Date(startStr).getTime()
+      const end = new Date(endStr).getTime()
+      const diffMs = end - start
+      if (diffMs <= 0 || isNaN(diffMs)) return null
+
+      const totalMinutes = Math.floor(diffMs / (1000 * 60))
+      if (totalMinutes < 60) {
+        return `${totalMinutes} mnt`
+      }
+      const hours = Math.floor(totalMinutes / 60)
+      const minutes = totalMinutes % 60
+      if (hours < 24) {
+        return minutes > 0 ? `${hours} jam ${minutes} mnt` : `${hours} jam`
+      }
+      const days = Math.floor(hours / 24)
+      return `${days} hari`
+    } catch {
+      return null
     }
   }
 
@@ -222,8 +274,10 @@ export function useTickets() {
     showToast,
     fetchTickets,
     submitTicket,
-    cycleStatus,
+    setStatus,
+    stepStatus,
     deleteTicket,
-    formatDate
+    formatDateTime,
+    calculateDuration
   }
 }
