@@ -8,23 +8,40 @@ Sistem pelacakan dan pencatatan pekerjaan (*ticketing*) modern, ringan, dan 100%
 
 ---
 
-## 📁 Struktur Direktori
+## 📁 Struktur Direktori & Halaman
 
 ```text
 ├── gas/
-│   └── Code.gs           # Backend Google Apps Script (REST API)
+│   └── Code.gs                  # Backend Google Apps Script (REST API)
 ├── src/
-│   ├── App.vue           # Antarmuka Utama Aplikasi Ticketing
-│   ├── main.js           # Entrypoint Vue 3
-│   └── style.css         # Styling Tailwind CSS
-├── index.html            # Entrypoint HTML
-├── package.json          # Node Dependencies & Scripts
-├── tailwind.config.js    # Konfigurasi Tailwind CSS
-├── postcss.config.js     # Konfigurasi PostCSS
-├── vite.config.js        # Konfigurasi Vite
-├── .env.example          # Template konfigurasi environment variable
-└── PRD.md                # Dokumen Blueprint & Spesifikasi
+│   ├── views/
+│   │   ├── PublicBoard.vue      # Halaman Publik (/) - Read-only Monitoring
+│   │   └── TechnicianPortal.vue # Halaman Teknisi (/teknisi) - Input & Kelola Status
+│   ├── composables/
+│   │   └── useTickets.js        # Logic & Reusable State Management
+│   ├── router/
+│   │   └── index.js             # Konfigurasi Vue Router
+│   ├── App.vue                  # Root Container (<router-view />)
+│   ├── main.js                  # Entrypoint Vue 3 & Router
+│   └── style.css                # Styling Tailwind CSS
+├── index.html                   # Entrypoint HTML
+├── package.json                 # Node Dependencies & Scripts
+├── vercel.json                  # SPA Routing Rewrite untuk Vercel
+├── tailwind.config.js           # Konfigurasi Tailwind CSS
+├── postcss.config.js            # Konfigurasi PostCSS
+├── vite.config.js               # Konfigurasi Vite
+├── .env.example                 # Template konfigurasi environment variable
+└── PRD.md                       # Dokumen Blueprint & Spesifikasi
 ```
+
+---
+
+## 🌐 Akses Halaman
+
+* **`http://localhost:5173/` (Halaman Publik / Klien):**  
+  Hanya untuk melihat daftar pekerjaan, metrik, filter, dan status pekerjaan (*read-only*). Pengunjung tidak dapat menginput atau mengubah status pekerjaan. Tidak ada tautan menuju halaman teknisi.
+* **`http://localhost:5173/teknisi` (Portal Khusus Teknisi):**  
+  Hanya dapat diakses melalui URL langsung oleh teknisi. Menyediakan form penambahan tiket pekerjaan baru serta fitur interaktif untuk mengubah status tiket (*Open* ➔ *In Progress* ➔ *Done*).
 
 ---
 
