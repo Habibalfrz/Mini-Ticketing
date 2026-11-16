@@ -7,6 +7,7 @@ const tickets = ref([])
 const isLoading = ref(false)
 const isSubmitting = ref(false)
 const updatingId = ref(null)
+const deletingId = ref(null)
 const errorMessage = ref('')
 const successMessage = ref('')
 
@@ -157,6 +158,35 @@ export function useTickets() {
     }
   }
 
+  // Hapus Tiket (Khusus Teknisi)
+  const deleteTicket = async (ticket) => {
+    if (!isApiConfigured.value || deletingId.value) return
+    const confirmed = window.confirm(`Apakah Anda yakin ingin menghapus tiket "${ticket.pekerjaan}"?`)
+    if (!confirmed) return
+
+    deletingId.value = ticket.id
+    const prevTickets = [...tickets.value]
+    // Optimistic delete
+    tickets.value = tickets.value.filter(t => t.id !== ticket.id)
+
+    try {
+      await fetch(API_URL, {
+        method: 'POST',
+        body: JSON.stringify({
+          action: 'delete_ticket',
+          id: ticket.id
+        })
+      })
+      showToast("Tiket berhasil dihapus!", 'success')
+    } catch (err) {
+      console.error("Gagal menghapus tiket:", err)
+      tickets.value = prevTickets
+      showToast("Gagal menghapus tiket di Google Sheets.", 'error')
+    } finally {
+      deletingId.value = null
+    }
+  }
+
   const formatDate = (dateStr) => {
     if (!dateStr) return '-'
     try {
@@ -180,6 +210,7 @@ export function useTickets() {
     isLoading,
     isSubmitting,
     updatingId,
+    deletingId,
     errorMessage,
     successMessage,
     filterStatus,
@@ -192,6 +223,7 @@ export function useTickets() {
     fetchTickets,
     submitTicket,
     cycleStatus,
+    deleteTicket,
     formatDate
   }
 }

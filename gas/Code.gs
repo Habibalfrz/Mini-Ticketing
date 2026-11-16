@@ -99,6 +99,26 @@ function doPost(e) {
       return respondJSON({ success: true, message: "Status tiket berhasil diperbarui", id: body.id, status: body.status });
     }
 
+    // FITUR HAPUS TIKET (Jika request menyertakan action: 'delete_ticket')
+    if (body.action === "delete_ticket" && body.id) {
+      const data = sheet.getDataRange().getValues();
+      let foundIndex = -1;
+
+      for (let i = 1; i < data.length; i++) {
+        if (String(data[i][0]) === String(body.id)) {
+          foundIndex = i + 1; // Google Sheets row 1-indexed
+          break;
+        }
+      }
+
+      if (foundIndex === -1) {
+        return respondJSON({ success: false, error: "Tiket tidak ditemukan." }, 404);
+      }
+
+      sheet.deleteRow(foundIndex);
+      return respondJSON({ success: true, message: "Tiket berhasil dihapus", id: body.id });
+    }
+
     // FITUR DEFAULT: Tambah Tiket Baru
     if (!body.pekerjaan || String(body.pekerjaan).trim() === "") {
       return respondJSON({ success: false, error: "Pekerjaan wajib diisi." }, 400);
