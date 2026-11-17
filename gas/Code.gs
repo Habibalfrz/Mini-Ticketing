@@ -1,15 +1,16 @@
 /**
- * Google Apps Script (GAS) Backend API for Simple Ticketing System
+ * Google Apps Script (GAS) Backend API for Job Tracking Elektromedis
  * Author: Habib Al Farizi (dametechstudio)
  *
  * STRUKTUR KOLOM GOOGLE SHEETS:
  * A1: ID
  * B1: Timestamp (Waktu Dibuat)
  * C1: Pekerjaan
- * D1: Prioritas
+ * D1: Prioritas (Cito / Normal)
  * E1: Status (Open, In Progress, Done)
  * F1: InProgressAt (Waktu Mulai Dikerjakan)
  * G1: DoneAt (Waktu Selesai)
+ * H1: Order By (Pemesan / Ruangan / Unit)
  *
  * INSTRUKSI DEPLOY ULANG:
  * 1. Buka Spreadsheet Anda > Extensions > Apps Script.
@@ -21,7 +22,7 @@ const SHEET_NAME = "Sheet1";
 
 /**
  * Handle HTTP GET Request
- * Mengambil seluruh data tiket dari Google Sheets beserta tracking waktu
+ * Mengambil seluruh data tiket dari Google Sheets beserta tracking waktu dan Order By
  */
 function doGet(e) {
   try {
@@ -43,10 +44,11 @@ function doGet(e) {
         id: String(row[0] || ""),
         timestamp: row[1] ? new Date(row[1]).toISOString() : "",
         pekerjaan: String(row[2] || ""),
-        prioritas: String(row[3] || "Medium"),
+        prioritas: String(row[3] || "Normal"),
         status: String(row[4] || "Open"),
         inProgressAt: row[5] ? new Date(row[5]).toISOString() : "",
-        doneAt: row[6] ? new Date(row[6]).toISOString() : ""
+        doneAt: row[6] ? new Date(row[6]).toISOString() : "",
+        orderBy: String(row[7] || "")
       };
     }).reverse(); // Tiket terbaru di atas
 
@@ -148,16 +150,56 @@ function doPost(e) {
 
     // FITUR DEFAULT: Tambah Tiket Baru
     if (!body.pekerjaan || String(body.pekerjaan).trim() === "") {
-      return respondJSON({ success: false, error: "Pekerjaan wajib diisi." }, 400);
+      return respondJSON({ success: false, error: "Deskripsi pekerjaan wajib diisi." }, 400);
+    }
+
+    const pekerjaan = String(body.pekerjaan).trim();
+    const prioritas = body.prioritas === "Cito" ? "Cito" : "Normal";
+    const status = body.status || "Open";
+    const orderBy = String(body.orderBy || body.order_by || "").trim();
+
+    // PENCEGAHAN DOUBLE SUBMIT PADA BACKEND:
+    // Cek jika baris terakhir memiliki pekerjaan dan order_by yang identik dalam rentang waktu < 5 detik
+    const lastRow = sheet.getLastRow();
+    if (lastRow > 1) {
+      const lastRowData = sheet.getRange(lastRow, 1, 1, Math.max(8, sheet.getLastColumn())).getValues()[0];
+      const lastPekerjaan = String(lastRowData[2] || "").trim();
+      const lastOrderBy = String(lastRowData[7] || "").trim();
+      const lastTimestamp = lastRowData[1] ? new Date(lastRowData[1]).getTime() : 0;
+      const currentTimestamp = new Date().getTime();
+
+      if (
+        lastPekerjaan.toLowerCase() === pekerjaan.toLowerCase() &&
+        lastOrderBy.toLowerCase() === orderBy.toLowerCase() &&
+        (currentTimestamp - lastTimestamp) < 5000
+      ) {
+        return respondJSON({
+          success: true,
+          message: "Tiket terdeteksi duplikat dan telah diamankan (tidak disimpan ulang).",
+          duplicate: true,
+          ticket: {
+            id: String(lastRowData[0]),
+            timestamp: String(lastRowData[1]),
+            pekerjaan: lastPekerjaan,
+            prioritas: String(lastRowData[3] || prioritas),
+            status: String(lastRowData[4] || status),
+            inProgressAt: String(lastRowData[5] || ""),
+            doneAt: String(lastRowData[6] || ""),
+            orderBy: lastOrderBy
+          }
+        });
+      }
     }
 
     const newId = Utilities.getUuid();
     const timestamp = new Date().toISOString();
-    const pekerjaan = String(body.pekerjaan).trim();
-    const prioritas = body.prioritas || "Medium";
-    const status = body.status || "Open";
 
-    // Append baris lengkap (7 kolom: ID, Timestamp, Pekerjaan, Prioritas, Status, InProgressAt, DoneAt)
+    // Auto-tambahkan header kolom 'Order By' pada baris 1 kolom H (kolom 8) jika masih kosong
+    if (sheet.getLastRow() >= 1 && sheet.getRange(1, 8).getValue() === "") {
+      sheet.getRange(1, 8).setValue("Order By");
+    }
+
+    // Append baris lengkap (8 kolom: ID, Timestamp, Pekerjaan, Prioritas, Status, InProgressAt, DoneAt, Order By)
     sheet.appendRow([
       newId,
       timestamp,
@@ -165,12 +207,13 @@ function doPost(e) {
       prioritas,
       status,
       "", // inProgressAt kosong di awal
-      ""  // doneAt kosong di awal
+      "", // doneAt kosong di awal
+      orderBy
     ]);
 
     return respondJSON({
       success: true,
-      message: "Tiket berhasil ditambahkan",
+      message: "Tiket elektromedis berhasil ditambahkan",
       ticket: {
         id: newId,
         timestamp: timestamp,
@@ -178,7 +221,8 @@ function doPost(e) {
         prioritas: prioritas,
         status: status,
         inProgressAt: "",
-        doneAt: ""
+        doneAt: "",
+        orderBy: orderBy
       }
     });
   } catch (error) {

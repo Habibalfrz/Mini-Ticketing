@@ -6,6 +6,7 @@ const API_URL = import.meta.env.VITE_GAS_API_URL || ''
 const tickets = ref([])
 const isLoading = ref(false)
 const isSubmitting = ref(false)
+const isCooldown = ref(false)
 const updatingId = ref(null)
 const deletingId = ref(null)
 const errorMessage = ref('')
@@ -16,8 +17,36 @@ const searchQuery = ref('')
 
 const form = ref({
   pekerjaan: '',
-  prioritas: 'Medium'
+  orderBy: '',
+  prioritas: 'Normal'
 })
+
+/**
+ * Helper fetch dengan dukungan timeout dan pemeriksaan status jaringan
+ */
+const fetchWithTimeout = async (url, options = {}, timeoutMs = 15000) => {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    throw new Error('Koneksi internet terputus. Pastikan perangkat Anda terhubung ke jaringan.')
+  }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+
+  try {
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    })
+    return res
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error('Waktu permintaan habis (timeout). Server Google Apps Script lambat merespons, silakan coba lagi.')
+    }
+    throw err
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 export function useTickets() {
   // Cek apakah URL Apps Script sudah dikonfigurasi
@@ -34,13 +63,17 @@ export function useTickets() {
     return { total, open, inProgress, done }
   })
 
-  // Filter & Pencarian Tiket
+  // Filter & Pencarian Tiket (Mencari di judul pekerjaan dan Order By)
   const filteredTickets = computed(() => {
+    const query = searchQuery.value.toLowerCase().trim()
     return tickets.value.filter(ticket => {
       const matchesStatus = filterStatus.value === 'All' || 
         (ticket.status || '').toLowerCase() === filterStatus.value.toLowerCase()
-      const matchesSearch = !searchQuery.value.trim() || 
-        (ticket.pekerjaan || '').toLowerCase().includes(searchQuery.value.toLowerCase().trim())
+      
+      const matchesSearch = !query || 
+        (ticket.pekerjaan || '').toLowerCase().includes(query) ||
+        (ticket.orderBy || '').toLowerCase().includes(query)
+
       return matchesStatus && matchesSearch
     })
   })
@@ -50,12 +83,16 @@ export function useTickets() {
       successMessage.value = message
       errorMessage.value = ''
       setTimeout(() => {
-        successMessage.value = ''
+        if (successMessage.value === message) {
+          successMessage.value = ''
+        }
       }, 4000)
     } else {
       errorMessage.value = message
       setTimeout(() => {
-        errorMessage.value = ''
+        if (errorMessage.value === message) {
+          errorMessage.value = ''
+        }
       }, 6000)
     }
   }
@@ -67,11 +104,15 @@ export function useTickets() {
     isLoading.value = true
     errorMessage.value = ''
     try {
-      const res = await fetch(API_URL)
+      const res = await fetchWithTimeout(API_URL, { method: 'GET' }, 15000)
       if (!res.ok) {
-        throw new Error(`HTTP error! status: ${res.status}`)
+        throw new Error(`Server merespons dengan status HTTP ${res.status}`)
       }
-      const data = await res.json()
+
+      const data = await res.json().catch(() => {
+        throw new Error('Respons dari Google Sheets tidak berupa format JSON yang valid.')
+      })
+
       if (Array.isArray(data)) {
         tickets.value = data
       } else if (data && data.error) {
@@ -81,46 +122,83 @@ export function useTickets() {
       }
     } catch (error) {
       console.error("Gagal mengambil data tiket:", error)
-      showToast("Gagal memuat tiket dari Google Sheets. Pastikan Web App GAS telah di-deploy dengan akses 'Anyone'.", 'error')
+      const msg = error.message || "Gagal memuat tiket dari Google Sheets. Pastikan Web App GAS telah di-deploy dengan akses 'Anyone'."
+      showToast(msg, 'error')
     } finally {
       isLoading.value = false
     }
   }
 
-  // Tambah Tiket Baru (Khusus Teknisi)
+  // Tambah Tiket Baru (Khusus Portal Elektromedis) dengan Pencegahan Double Submit
   const submitTicket = async () => {
-    if (!form.value.pekerjaan.trim()) return
+    // 1. Guard anti-double submit: jika sedang proses atau dalam cooldown, tolak klik berikutnya
+    if (isSubmitting.value || isCooldown.value) {
+      return false
+    }
+
+    // 2. Validasi input
+    if (!form.value.pekerjaan.trim()) {
+      showToast("Deskripsi pekerjaan atau alat medis wajib diisi.", "error")
+      return false
+    }
 
     if (!isApiConfigured.value) {
       showToast("VITE_GAS_API_URL belum dikonfigurasi di file .env", 'error')
-      return
+      return false
     }
 
+    // 3. Kunci status submit seketika
     isSubmitting.value = true
     errorMessage.value = ''
 
     try {
-      await fetch(API_URL, {
+      const res = await fetchWithTimeout(API_URL, {
         method: 'POST',
         body: JSON.stringify({
           pekerjaan: form.value.pekerjaan.trim(),
-          prioritas: form.value.prioritas,
+          orderBy: form.value.orderBy.trim(),
+          prioritas: form.value.prioritas || 'Normal',
           status: 'Open'
         })
+      }, 15000)
+
+      if (!res.ok) {
+        throw new Error(`Gagal menyimpan data ke server (HTTP ${res.status})`)
+      }
+
+      const result = await res.json().catch(() => {
+        throw new Error('Respons server tidak dapat dibaca.')
       })
 
-      showToast("Tiket pekerjaan berhasil ditambahkan!", 'success')
+      if (result && result.success === false) {
+        throw new Error(result.error || 'Server menolak penyimpanan tiket.')
+      }
+
+      if (result && result.duplicate) {
+        showToast("Tiket serupa baru saja ditambahkan (duplikasi diabaikan).", 'success')
+      } else {
+        showToast("Tiket pekerjaan elektromedis berhasil ditambahkan!", 'success')
+      }
+
+      // Reset form ke kondisi awal
       form.value.pekerjaan = ''
-      form.value.prioritas = 'Medium'
+      form.value.orderBy = ''
+      form.value.prioritas = 'Normal'
       
       await fetchTickets()
       return true
     } catch (error) {
       console.error("Gagal menyimpan data:", error)
-      showToast("Terjadi kesalahan saat menyimpan tiket. Periksa koneksi atau URL Apps Script.", 'error')
+      const msg = error.message || "Terjadi kesalahan saat menyimpan tiket. Periksa koneksi atau URL Apps Script."
+      showToast(msg, 'error')
       return false
     } finally {
       isSubmitting.value = false
+      // Berikan cooldown singkat 1000ms untuk mencegah accidental rapid-tap
+      isCooldown.value = true
+      setTimeout(() => {
+        isCooldown.value = false
+      }, 1000)
     }
   }
 
@@ -152,14 +230,24 @@ export function useTickets() {
     }
 
     try {
-      await fetch(API_URL, {
+      const res = await fetchWithTimeout(API_URL, {
         method: 'POST',
         body: JSON.stringify({
           action: 'update_status',
           id: ticket.id,
           status: targetStatus
         })
-      })
+      }, 15000)
+
+      if (!res.ok) {
+        throw new Error(`HTTP error ${res.status}`)
+      }
+
+      const result = await res.json().catch(() => null)
+      if (result && result.success === false) {
+        throw new Error(result.error || 'Server menolak update status.')
+      }
+
       showToast(`Status tiket #${ticket.id ? ticket.id.slice(0, 6) : ''} diubah ke "${targetStatus}"`, 'success')
     } catch (err) {
       console.error("Gagal update status:", err)
@@ -167,7 +255,7 @@ export function useTickets() {
       ticket.status = prevStatus
       ticket.inProgressAt = prevInProgress
       ticket.doneAt = prevDone
-      showToast("Gagal memperbarui status di Google Sheets.", 'error')
+      showToast("Gagal memperbarui status di Google Sheets. " + (err.message || ''), 'error')
     } finally {
       updatingId.value = null
     }
@@ -185,7 +273,7 @@ export function useTickets() {
     }
   }
 
-  // Hapus Tiket (Khusus Teknisi)
+  // Hapus Tiket (Khusus Portal Elektromedis)
   const deleteTicket = async (ticket) => {
     if (!isApiConfigured.value || deletingId.value) return
     const confirmed = window.confirm(`Apakah Anda yakin ingin menghapus tiket "${ticket.pekerjaan}"?`)
@@ -196,18 +284,28 @@ export function useTickets() {
     tickets.value = tickets.value.filter(t => t.id !== ticket.id)
 
     try {
-      await fetch(API_URL, {
+      const res = await fetchWithTimeout(API_URL, {
         method: 'POST',
         body: JSON.stringify({
           action: 'delete_ticket',
           id: ticket.id
         })
-      })
+      }, 15000)
+
+      if (!res.ok) {
+        throw new Error(`HTTP error ${res.status}`)
+      }
+
+      const result = await res.json().catch(() => null)
+      if (result && result.success === false) {
+        throw new Error(result.error || 'Server menolak penghapusan.')
+      }
+
       showToast("Tiket berhasil dihapus!", 'success')
     } catch (err) {
       console.error("Gagal menghapus tiket:", err)
       tickets.value = prevTickets
-      showToast("Gagal menghapus tiket di Google Sheets.", 'error')
+      showToast("Gagal menghapus tiket di Google Sheets. " + (err.message || ''), 'error')
     } finally {
       deletingId.value = null
     }
@@ -256,11 +354,18 @@ export function useTickets() {
     }
   }
 
+  // Helper untuk normalisasi tampilan prioritas (Cito vs Normal)
+  const isCito = (priority) => {
+    const p = String(priority || '').toLowerCase()
+    return p === 'cito' || p === 'high'
+  }
+
   return {
     API_URL,
     tickets,
     isLoading,
     isSubmitting,
+    isCooldown,
     updatingId,
     deletingId,
     errorMessage,
@@ -278,6 +383,7 @@ export function useTickets() {
     stepStatus,
     deleteTicket,
     formatDateTime,
-    calculateDuration
+    calculateDuration,
+    isCito
   }
 }

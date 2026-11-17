@@ -9,9 +9,13 @@ const routes = [
     component: PublicBoard
   },
   {
-    path: '/teknisi',
-    name: 'TechnicianPortal',
+    path: '/elektromedis',
+    name: 'ElektromedisPortal',
     component: TechnicianPortal
+  },
+  {
+    path: '/teknisi',
+    redirect: '/elektromedis'
   },
   {
     // Catch-all: redirect any unknown URL to public home
